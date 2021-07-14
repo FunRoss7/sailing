@@ -1,0 +1,180 @@
+#include <Adafruit_MCP4725.h>
+
+#include "microTuple.h"
+
+#define D2 2
+
+bool faultOccured {false};
+
+Adafruit_MCP4725 throttleDAC;
+Adafruit_MCP4725 regenDAC;
+
+class ScaleConverter {
+ public:
+  ScaleConverter(double inputMinScaleVoltage, double inputMaxScaleVoltage, double outputMinScaleVoltage = 0.0, double arduinoVoltage = 5.0, bool logarthimic = true) :
+    inputMinScaleVoltage(inputMinScaleVoltage),
+    inputMaxScaleVoltage(inputMaxScaleVoltage),
+    outputMinScaleVoltage(outputMinScaleVoltage),
+    arduinoVoltage(arduinoVoltage),
+    logarthimic(logarthimic) {
+      if (inputMinScaleVoltage < inputMaxScaleVoltage) {
+        faultOccured = true;
+      }
+    }
+
+ private:
+  // Board Constants
+  const int maxADCCounts = 1023;
+
+  // Parameterized Electrical Constants
+  const double inputMinScaleVoltage;
+  const double inputMaxScaleVoltage;
+  const double outputMinScaleVoltage;
+  const double arduinoVoltage;
+  const bool logarthimic;
+
+ public:
+  double convert(double inputVoltage) {
+    // Deadband zone. Most Likely.
+    if (inputVoltage <= inputMinScaleVoltage) {
+      return 0.0;
+    }
+  
+    // Beyond full scale, peg to full output
+    if (inputVoltage >= inputMaxScaleVoltage) {
+      return arduinoVoltage;
+    }
+    double inputScaleFraction = (inputVoltage -  inputMinScaleVoltage) / (inputMaxScaleVoltage - inputMinScaleVoltage);
+    double outputScaleFraction = inputScaleFraction;
+
+    // "Logarithmic" approximation with a inverse curve
+    if (logarthimic) {
+      outputScaleFraction = -inputScaleFraction / (2.0*inputScaleFraction - 3.0);
+    };
+
+    return outputScaleFraction * (arduinoVoltage - outputMinScaleVoltage) + outputMinScaleVoltage;
+  }
+};
+
+class MotorController {
+ public:
+  MotorController::MotorController (
+  double arduinoVoltage,
+  bool invertReverse,
+  int fwdThrottleInPin,
+  int revThrottleInPin,
+  int regenThrottleInPin,
+  int throttleOutI2CAddr,
+  int reverseOutPin,
+  int regenOutI2CAddr
+  );
+
+
+  void update();
+
+ private:
+  const double arduinoVoltage;
+  const bool invertReverse;
+  const int fwdThrottleInPin;
+  const int revThrottleInPin;
+  const int regenThrottleInPin;
+  const int throttleOutI2CAddr;
+  const int reverseOutPin;
+  const int regenOutI2CAddr;
+
+  ScaleConverter throttleConverter {0.0, arduinoVoltage, 0.0, arduinoVoltage, true};
+  ScaleConverter regenConverter {0.0, arduinoVoltage, 0.0, arduinoVoltage, true};
+};
+
+MotorController::MotorController (
+ double arduinoVoltage = 5.0,
+ bool invertReverse = true,
+ int fwdThrottleInPin = A1,
+ int revThrottleInPin = A2,
+ int regenThrottleInPin = A3,
+ int throttleOutI2CAddr = 0x60,
+ int reverseOutPin = D2,
+ int regenOutI2CAddr = 0x61
+ ) : 
+ arduinoVoltage(arduinoVoltage),
+ invertReverse( invertReverse),
+ fwdThrottleInPin(fwdThrottleInPin),
+ revThrottleInPin(revThrottleInPin),
+ regenThrottleInPin(regenThrottleInPin),
+ throttleOutI2CAddr(throttleOutI2CAddr),
+ reverseOutPin(reverseOutPin),
+ regenOutI2CAddr(regenOutI2CAddr) {
+
+  // Setup Reverse Signal Pin
+  pinMode(reverseOutPin, OUTPUT);
+
+  // Connect to DACs
+  throttleDAC.begin(throttleOutI2CAddr);
+  regenDAC.begin(regenOutI2CAddr);
+
+  // Set DACs to 0
+  regenDAC.setVoltage(0, false);
+  throttleDAC.setVoltage(0, false);
+}
+
+void MotorController::update() {
+
+  // Get all inputs
+  int fwdThrottleInput = analogRead(fwdThrottleInPin);
+  int revThrottleInput = analogRead(revThrottleInPin);
+  int regenInput = analogRead(regenThrottleInPin);
+  Serial.println(fwdThrottleInput);
+  Serial.println(revThrottleInput);
+  Serial.println(regenInput);
+  Serial.println();
+
+  // Check for faults
+  if (fwdThrottleInput && revThrottleInput) {
+    faultOccured = true; // got signal from both potentiometer sides. either improper wiring or corroded pot.
+    return;
+  }
+
+  // Return early if we have a regen signal
+  if (regenInput) {
+    double regenInputVoltage = (float) regenInput / 1023.0 * arduinoVoltage;
+    double regenOutputVoltage = regenConverter.convert(regenInputVoltage);
+    int regenOutput = regenOutputVoltage / arduinoVoltage * 4095;
+    regenDAC.setVoltage(regenOutput, false);
+    throttleDAC.setVoltage(0, false);
+    digitalWrite(reverseOutPin, (invertReverse)?(HIGH):(LOW));
+    return;
+  }
+
+  // Throttle Calcualtions
+  int throttleInput = fwdThrottleInput | revThrottleInput;
+  double throttleInputVoltage = (float) throttleInput / 1023.0 * arduinoVoltage;
+  double outputVoltage = throttleConverter.convert(throttleInputVoltage);
+  bool outputReverseSignal = (revThrottleInput)?(!invertReverse):(invertReverse);
+
+  // Send the throttle signal
+  int throttleOutput = outputVoltage / arduinoVoltage * 4095;
+  regenDAC.setVoltage(0, false);
+  throttleDAC.setVoltage(throttleOutput, false);
+  digitalWrite(reverseOutPin, (outputReverseSignal)?(HIGH):(LOW) );
+}
+
+MotorController* motorController;
+
+void setup() {
+  motorController = new MotorController (4.8, true, A1, A2, A3, 0x60, D2, 0x61);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+  Serial.begin(9600);           //  setup serial
+}
+
+void loop() {
+  if (!faultOccured) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(250);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(250);
+    return;
+  }
+
+  motorController->update();
+}
