@@ -222,9 +222,10 @@ class WindDrivenBoat:
 # ---------------------------------------------------------------------------
 
 def main():
-    turbine = WindTurbine(diameter=8 * ureg.inch)
+    turbine = WindTurbine(diameter=70 * ureg.inch)
     propeller = Propeller()
-    hull = BoatHull()
+    hull = BoatHull(cd=10
+          )
 
     boat = WindDrivenBoat(turbine, propeller, hull)
     boat.solve(wind_speed=10 * ureg.knot)
