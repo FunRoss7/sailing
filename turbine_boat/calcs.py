@@ -6,63 +6,95 @@ import math
 ureg = pint.UnitRegistry()
 
 air_density = 1.225 * ureg.kilogram / ureg.meter**3
+water_density = 999 * ureg.kilogram / ureg.meter**3
 
-# frame dynamics
-wind_speed = 10 * ureg.knots
-boat_speed = 5 * ureg.knots
+# turbine assumptions (operating at optimal design point, but the turbine sucks b/c it's a propeller operating in reverse)
+optimal_lambda = 2*math.pi # idk, maybe 8? i'm starting with a 2 blade turbine
+turbine_pitch_to_diameter = math.pi / optimal_lambda
 
-# frame calcs
-apparent_wind_speed = wind_speed + boat_speed
+axial_induction = 0.2 # idk, i just made up a number. there's a better way to do this using Cp max and stuff
 
-# geometry
-turbine_diameter = 11 * ureg.inch
-turbine_radius = turbine_diameter / 2
+# propeller assumptions
+propeller_effective_power_factor = 0.7 # conservative estimate i hope
+propeller_optimal_slip = 0.1
 
-# geometry calcs
-swept_area = math.pi * turbine_radius**2
-max_cp_design_pt, lambda_design_pt = find_max_cp()
 
-# anti thrust calcs here
+def wind_turbine(turbine_diameter, apparent_wind_speed):
+    optimal_lambda = 2 * math.pi
+    axial_induction = 0.2
 
-# convert to contextual units
-shaft_speed_omega = (lambda_design_pt * apparent_wind_speed) / turbine_radius
-mechanical_power = 0.5 * air_density * swept_area * apparent_wind_speed**3 * max_cp_design_pt
+    area = math.pi * (turbine_diameter / 2)**2
 
-# Convert to a more readable units
-shaft_speed_rpm = shaft_speed_omega.to(ureg.rpm)
-mechanical_power_watts = mechanical_power.to(ureg.watt)
+    ct = 4 * axial_induction * (1 - axial_induction)
+    cp = 4 * axial_induction * (1 - axial_induction)**2
 
-# Convert to a common power unit like watts or kilowatts
-print(f"Shaft Speed (Rotor Speed): {shaft_speed_rpm:.2f}")
-print(f"Mechanical Power: {mechanical_power_watts:.2f}")
+    antithrust = 0.5 * air_density * area * apparent_wind_speed**2 * ct
+    power = 0.5 * air_density * area * apparent_wind_speed**3 * cp
+    shaft_speed_hz = optimal_lambda * apparent_wind_speed / (math.pi * turbine_diameter)
 
-# Calculate torque: P = T * omega => T = P / omega
-torque = mechanical_power / shaft_speed_omega
-torque_nm = torque.to(ureg.newton * ureg.meter)
-print(f"Torque: {torque_nm:.2f}")
+    return antithrust, power, shaft_speed_hz
 
-# Calculate thrust
-# Step 1: Solve for axial induction factor 'a' from Cp = 4a(1-a)^2
-# Equation: 4a^3 - 8a^2 + 4a - Cp_design_pt = 0
-coefficients = [4, -8, 4, -max_cp_design_pt]
-roots = np.roots(coefficients)
+def calculate_boat_drag(boat_speed):
+  # geometry properties
+  beam = 2 * ureg.inch
+  depth = 0.5 * ureg.inch
+  area_multiplier = 0.33 # b/c it's a round shallow boat
+  Cd = 0.1 # it's also a skimmer
 
-# Find the real root 'a' between 0 and 0.5 (typical range for axial induction factor)
-axial_induction_factor_a = None
-for root in roots:
-    if np.isreal(root) and (root.real > 0) and (root.real < 0.5):
-        axial_induction_factor_a = root.real
-        break
+  # calculate drag
+  frontal_area = area_multiplier * beam * depth
+  drag_force = 1/2*Cd*frontal_area*water_density*boat_speed**2
+  return drag_force
 
-if axial_induction_factor_a is None:
-    print("Could not find a valid axial induction factor 'a' for the given Cp.")
-    thrust = None
-else:
-    # Step 2: Calculate the thrust coefficient (Ct) using Ct = 4a(1-a)
-    thrust_coefficient_Ct = 4 * axial_induction_factor_a * (1 - axial_induction_factor_a)
+def propeller_thrust(power,boat_speed):
+  effective_power = propeller_effective_power_factor * power
+  thrust = effective_power / boat_speed
+  return thrust
 
-    # Step 3: Calculate the thrust: T = 0.5 * air_density * swept_area   * apparent_wind_speed**2 * thrust_coefficient_Ct
-    thrust = 0.5 * air_density * swept_area * apparent_wind_speed**2 * thrust_coefficient_Ct
-    thrust_newtons = thrust.to(ureg.newton)
-    print(f"Thrust: {thrust_newtons:.2f}")
+def calculate_thrusts(turbine_diameter, wind_speed, boat_speed, select_prop=False):
+  apparent_wind_speed = boat_speed + wind_speed
+  antithrust, power, shaft_speed_hz = wind_turbine(turbine_diameter, apparent_wind_speed)
+  drag = calculate_boat_drag(boat_speed)
+  thrust = propeller_thrust(power, boat_speed)
+
+  # calculate matching propeller properties
+  if select_prop:
+    # pitch is simple
+    prop_pitch = boat_speed/shaft_speed_hz * (propeller_optimal_slip + 1)
+
+    # diameter takes a bit more calculation
+    delta_v = propeller_optimal_slip * boat_speed
+    m_dot = thrust / delta_v
+    area = m_dot / boat_speed / water_density
+    radius = (area / math.pi)**0.5
+    prop_diameter = radius*2
+
+    return {'pitch': prop_pitch/ prop_diameter, 'diameter':prop_diameter.to('mm'), "shaft speed":shaft_speed_hz.to('rpm')}
+
+
+  return thrust - drag - antithrust
+
+def calculate_vessel_speed(turbine_diameter, wind_speed):
+  minimizer = lambda b: calculate_thrusts(turbine_diameter, wind_speed, b * ureg.knot) **  2
+  boat_speed = minimize_scalar(minimizer, bounds=[1e-10,1e10]).x
+  boat_speed = boat_speed * ureg.knot
+  propeller = calculate_thrusts(turbine_diameter, wind_speed, boat_speed, select_prop=True)
+  return boat_speed, propeller
+
+def main():
+  #w = np.linspace(1*ureg.knot,10*ureg.knot,10)
+  turbine_diameter = 8 * ureg.inch
+  turbine_pitch = turbine_diameter*turbine_pitch_to_diameter
+  w = 10 * ureg.knot
+  b = calculate_vessel_speed(turbine_diameter,w)
+  print("turbine diameter:",turbine_diameter)
+  print("turbine pitch:",turbine_pitch)
+  print(w)
+  print(b)
+
+
+main()
+
+
+
 
