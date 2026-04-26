@@ -39,8 +39,9 @@ class WindTurbine:
         self.apparent_wind_speed = apparent_wind_speed
 
         q = 0.5 * air_density * apparent_wind_speed ** 2
-        self.antithrust = q * self.area * self.ct
-        self.power = q * apparent_wind_speed * self.area * self.cp
+        momentum_component = q * self.area
+        self.antithrust =  momentum_component * self.ct
+        self.power = momentum_component * apparent_wind_speed * self.cp
         self.shaft_speed_hz = (
             self.optimal_lambda * apparent_wind_speed / (math.pi * self.diameter)
         )
@@ -86,13 +87,21 @@ class Propeller:
         self.pitch = None
         self.pitch_to_diameter = None
 
-    def solve(self, turbine_power, shaft_speed_hz, boat_speed):
+    def solve(self, shaft_power, shaft_speed_hz, boat_speed):
         """Size the propeller and compute thrust from turbine power and boat speed."""
         self.shaft_speed_hz = shaft_speed_hz
         self.boat_speed = boat_speed
 
-        effective_power = self.effective_power_factor * turbine_power
+        effective_power = shaft_power * self.effective_power_factor
+
+        # this seems like a problem. if we're looking at bollard pull, thrust goes to infinity... 
+        # theoretically yes, we'd have an infinitely large propeller to compensate, but we should bound better
         self.thrust = effective_power / boat_speed
+        
+        # based on this source https://www.boatdesign.net/attachments/picture-1-png.27701/
+        # we instead say that optimal_slip = pitch_to_diameter_ratio - advance_ratio
+        # so at boatspeed = 0 we know advance ratio is zero and therefore based on an optimal slip of 0.1, the pitch to diamter ratio is also 0.1
+
 
         # Momentum sizing
         delta_v = self.optimal_slip * boat_speed
@@ -222,10 +231,9 @@ class WindDrivenBoat:
 # ---------------------------------------------------------------------------
 
 def main():
-    turbine = WindTurbine(diameter=70 * ureg.inch)
-    propeller = Propeller()
-    hull = BoatHull(cd=10
-          )
+    turbine = WindTurbine(diameter=630*2 * ureg.mm, axial_induction=0.3333)
+    propeller = Propeller(effective_power_factor=1)
+    hull = BoatHull(beam=48*ureg.inch, depth=12*ureg.inch, area_multiplier=0.8, cd=0.0)
 
     boat = WindDrivenBoat(turbine, propeller, hull)
     boat.solve(wind_speed=10 * ureg.knot)
