@@ -146,7 +146,7 @@ class BoatHull:
         beam=2 * ureg.inch,
         depth=0.5 * ureg.inch,
         area_multiplier=0.33,
-        cd=0.1,
+        cd=None,
         water_density=999 * ureg.kg / ureg.meter ** 3,
     ):
         self.beam = beam
@@ -160,6 +160,10 @@ class BoatHull:
         # Set at solve time
         self.boat_speed = None
         self.drag = None
+
+        # Calibrate Cd
+        if self.cd is None:
+            self.cd = calibrate_hull_cd(self)
 
     def solve(self, boat_speed):
         self.boat_speed = boat_speed
@@ -235,16 +239,46 @@ class WindDrivenBoat:
 
 
 # ---------------------------------------------------------------------------
+# Hull calibration from trolling-motor data
+# ---------------------------------------------------------------------------
+
+def calibrate_hull_cd(
+    hull: BoatHull,
+    motor_amps=60 * ureg.ampere,
+    motor_volts=13 * ureg.volt,
+    observed_speed=5 * ureg.mph,
+    prop_efficiency=0.85,
+) -> float:
+    """
+    Back-solve hull Cd from a single trolling-motor data point.
+
+    Treat electrical power as shaft power (motor losses unknown).
+    At steady state: Drag = P_shaft * eta_prop / V_boat.
+    Then: Cd = Drag / (0.5 * rho * A_frontal * V^2).
+    """
+    # Geometry from the actual boat; Cd calibrated from trolling-motor run:
+    #   60 A × 13 V → 5 mph, prop η = 0.85  →  Drag ≈ 297 N  →  Cd ≈ 0.35
+    
+    motor_power_consumed = motor_amps * motor_volts
+    shaft_power_output = motor_power_consumed * 0.9
+    drag = shaft_power_output * prop_efficiency / observed_speed
+    q = 0.5 * hull.water_density * observed_speed ** 2
+    cd = drag / hull.frontal_area / q
+    return cd.to("")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     turbine = WindTurbine(diameter= 630*2 * ureg.mm, axial_induction=0.3333)
     propeller = Propeller(effective_power_factor=0.85)
-    hull = BoatHull(beam=48*ureg.inch, depth=12*ureg.inch, area_multiplier=0.8, cd=0.3)
+
+    hull = BoatHull(beam=48*ureg.inch, depth=12*ureg.inch, area_multiplier=0.8)
 
     boat = WindDrivenBoat(turbine, propeller, hull)
-    boat.solve(wind_speed=18 * ureg.knot)
+    boat.solve(wind_speed=5 * ureg.knot)
     boat.inspect()
 
 
