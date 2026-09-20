@@ -179,7 +179,6 @@ class BoatHull:
         print(f"  Frontal area     : {self.frontal_area.to('inch**2'):.4g}")
         print(f"  Cd               : {self.cd:.4f}")
         if self.drag is not None:
-            print(f"  Boat speed       : {self.boat_speed.to('knot'):.4g}")
             print(f"  Drag             : {self.drag.to('newton'):.4g}")
 
 
@@ -272,13 +271,13 @@ def calibrate_hull_cd(
 # ---------------------------------------------------------------------------
 
 def main():
-    turbine = WindTurbine(diameter= 630*2 * ureg.mm, axial_induction=0.3333)
+    turbine = WindTurbine(diameter= 51 * ureg.meter, axial_induction=0.3333)
     propeller = Propeller(effective_power_factor=0.85)
 
-    hull = BoatHull(beam=48*ureg.inch, depth=12*ureg.inch, area_multiplier=0.8)
+    hull = BoatHull(beam=51*ureg.meters, depth=30*ureg.feet, area_multiplier=0.9, cd=0.01000)
 
     boat = WindDrivenBoat(turbine, propeller, hull)
-    boat.solve(wind_speed=5 * ureg.knot)
+    boat.solve(wind_speed=10 * ureg.knot)
     boat.inspect()
 
 
